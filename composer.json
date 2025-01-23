@@ -28,11 +28,23 @@
         ]
     },
     "minimum-stability": "dev",
-	"prefer-stable": true,
+    "prefer-stable": true,
     "require": {
-        "stripe/stripe-php": "^16.4"
+        "stripe/stripe-php": "^16.4",
+        "leafs/billing": "dev-main"
     },
     "require-dev": {
         "leafs/alchemy": "^2.2"
+    },
+    "scripts": {
+        "alchemy": "./vendor/bin/alchemy setup",
+        "test": "./vendor/bin/alchemy setup --test",
+        "lint": "./vendor/bin/alchemy setup --lint",
+        "actions": "./vendor/bin/alchemy setup --actions"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
     }
 }
