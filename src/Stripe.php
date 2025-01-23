@@ -44,8 +44,8 @@ class Stripe
 
             $this->provider = new StripeClient($config);
 
-            if (storage()->exists(StoragePath('billing/provider.json'))) {
-                $provider = storage()->read(StoragePath('billing/provider.json'));
+            if (storage()->exists(StoragePath('billing/stripe.json'))) {
+                $provider = storage()->read(StoragePath('billing/stripe.json'));
                 $provider = json_decode($provider, true);
 
                 $this->product = $provider['product'];
@@ -58,7 +58,7 @@ class Stripe
                 $this->product = $stripeProduct->id;
                 $this->initTiers($billingSettings);
 
-                storage()->createFile(StoragePath('billing/provider.json'), json_encode([
+                storage()->createFile(StoragePath('billing/stripe.json'), json_encode([
                     'product' => $this->product,
                     'tiers' => $this->tiers,
                 ]), ['recursive' => true]);
