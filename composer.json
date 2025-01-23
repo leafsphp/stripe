@@ -1,0 +1,38 @@
+{
+    "name": "leafs/stripe",
+    "description": "Stripe integration for Leaf Billing",
+    "keywords": [
+        "billing",
+        "stripe",
+        "payments",
+        "leaf",
+        "php"
+    ],
+    "homepage": "https://github.com/leafsphp/stripe",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Michael Darko",
+            "email": "mickdd22@gmail.com",
+            "homepage": "https://mychi.netlify.app",
+            "role": "Developer"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Leaf\\Billing\\": "src"
+        },
+        "files": [
+            "src/functions.php"
+        ]
+    },
+    "minimum-stability": "dev",
+	"prefer-stable": true,
+    "require": {
+        "stripe/stripe-php": "^16.4"
+    },
+    "require-dev": {
+        "leafs/alchemy": "^2.2"
+    }
+}
