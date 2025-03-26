@@ -28,12 +28,13 @@ class Stripe implements BillingProvider
 
     /**
      * Stripe client
+     * @var StripeClient
      */
     protected $provider;
 
-    protected function __construct($billingSettings = [])
+    public function __construct($billingSettings = [])
     {
-        \Stripe\Stripe::setAppInfo('Leaf Billing', '0.0.1');
+        \Stripe\Stripe::setAppInfo('Leaf Billing', ($_ENV['APP_VERSION'] ?? '0.1.0'));
         \Stripe\Stripe::setMaxNetworkRetries(3);
 
         $config = [
@@ -151,11 +152,11 @@ class Stripe implements BillingProvider
             $this->provider->checkout->sessions->create([
                 'payment_method_types' => ['card'],
                 'line_items' => $line_items,
-                'mode' => 'payment',
+                'mode' => \Stripe\Checkout\Session::MODE_PAYMENT,
                 'metadata' => $data['metadata'] ?? [],
                 'customer_email' => $data['customer'] ?? null,
-                'success_url' => $data['success_url'] ?? (request()->getUrl() . $this->config['url.success'] . '?session_id={CHECKOUT_SESSION_ID}'),
-                'cancel_url' => $data['cancel_url'] ?? (request()->getUrl() . $this->config['url.cancel']),
+                'success_url' => $data['urls']['success'] ?? (request()->getUrl() . $this->config['urls']['success'] . '?session_id={CHECKOUT_SESSION_ID}'),
+                'cancel_url' => $data['urls']['cancel'] ?? (request()->getUrl() . $this->config['urls']['cancel'] . '?session_id={CHECKOUT_SESSION_ID}'),
             ])
         );
     }
@@ -171,7 +172,7 @@ class Stripe implements BillingProvider
     /**
      * @inheritDoc
      */
-    public function subscription(string $id): Subscription
+    public function subscription(string $id): ?Subscription
     {
         return new Subscription([]);
     }
@@ -187,27 +188,31 @@ class Stripe implements BillingProvider
     /**
      * @inheritDoc
      */
-    public function session(string $id): Session
+    public function session(string $id): ?Session
     {
-        return new Session([]);
+        try {
+            return new Session(
+                $this->provider->checkout->sessions->retrieve($id)
+            );
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 
     /**
      * @inheritDoc
      */
-    public function isSuccessful(): bool
-    {
-        return ($this->provider->checkout->sessions->retrieve(
-            request()->get('session_id')
-        ))->payment_status === 'paid';
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function webhook(string $id): Event
+    public function webhook(): Event
     {
         return new Event([]);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function callback(): ?Session
+    {
+        return $this->session(request()->get('session_id'));
     }
 
     /**
