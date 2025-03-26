@@ -2,7 +2,6 @@
 
 namespace Leaf\Billing;
 
-use Leaf\Billing;
 use Stripe\StripeClient;
 
 /**
@@ -10,10 +9,8 @@ use Stripe\StripeClient;
  * -----------
  * Stripe provider for Leaf Billing
  */
-class Stripe
+class Stripe implements BillingProvider
 {
-    use Billing;
-
     /**
      * Stripe product
      */
@@ -24,55 +21,62 @@ class Stripe
      */
     protected $tiers = [];
 
-    protected function initProvider($billingSettings = [])
+    /**
+     * Config for billing
+     */
+    protected $config = [];
+
+    /**
+     * Stripe client
+     */
+    protected $provider;
+
+    protected function __construct($billingSettings = [])
     {
-        if ($billingSettings['provider']) {
-            \Stripe\Stripe::setAppInfo('Leaf Billing', '0.0.1');
-            \Stripe\Stripe::setMaxNetworkRetries(3);
+        \Stripe\Stripe::setAppInfo('Leaf Billing', '0.0.1');
+        \Stripe\Stripe::setMaxNetworkRetries(3);
 
-            $config = [
-                'api_key' => $billingSettings['secrets.apiKey'],
-            ];
+        $config = [
+            'api_key' => $billingSettings['connection']['secrets.apiKey'],
+        ];
 
-            if (isset($billingSettings['secrets.clientId'])) {
-                $config['client_id'] = $billingSettings['secrets.clientId'];
-            }
-
-            if (isset($billingSettings['provider.version'])) {
-                $config['stripe_version'] = $billingSettings['provider.version'];
-            }
-
-            $this->provider = new StripeClient($config);
-
-            if (storage()->exists(StoragePath('billing/stripe.json'))) {
-                $provider = storage()->read(StoragePath('billing/stripe.json'));
-                $provider = json_decode($provider, true);
-
-                $this->product = $provider['product'];
-                $this->tiers = $provider['tiers'];
-            } else {
-                $stripeProduct = $this->provider->products->create([
-                    'name' => 'Leaf Billing ' . _env('APP_NAME', '') . ' ' . time(),
-                ]);
-
-                $this->product = $stripeProduct->id;
-                $this->initTiers($billingSettings);
-
-                storage()->createFile(StoragePath('billing/stripe.json'), json_encode([
-                    'product' => $this->product,
-                    'tiers' => $this->tiers,
-                ]), ['recursive' => true]);
-            }
+        if (isset($billingSettings['connection']['secrets.publishableKey'])) {
+            $config['client_id'] = $billingSettings['connection']['secrets.publishableKey'];
         }
 
-        $this->config($billingSettings);
+        if (isset($billingSettings['connection']['version'])) {
+            $config['stripe_version'] = $billingSettings['connection']['version'];
+        }
+
+        $this->config = $billingSettings;
+        $this->provider = new StripeClient($config);
+
+        if (storage()->exists(StoragePath('billing/stripe.json'))) {
+            $provider = storage()->read(StoragePath('billing/stripe.json'));
+            $provider = json_decode($provider, true);
+
+            $this->product = $provider['product'];
+            $this->tiers = $provider['tiers'];
+        } else {
+            $stripeProduct = $this->provider->products->create([
+                'name' => 'Leaf Billing ' . _env('APP_NAME', '') . ' ' . time(),
+            ]);
+
+            $this->product = $stripeProduct->id;
+            $this->initTiers($billingSettings['tiers']);
+
+            storage()->createFile(StoragePath('billing/stripe.json'), json_encode([
+                'product' => $this->product,
+                'tiers' => $this->tiers,
+            ]), ['recursive' => true]);
+        }
     }
 
-    protected function initTiers(array $billingSettings)
+    protected function initTiers(array $tierSettings)
     {
-        foreach ($billingSettings['tiers'] as $tier) {
+        foreach ($tierSettings as $tier) {
             $plan = [
-                'currency' => $billingSettings['currency.name'],
+                'currency' => $this->config['connection']['currency.name'],
                 'product' => $this->product,
                 'nickname' => $tier['name'],
             ];
@@ -124,48 +128,133 @@ class Stripe
     }
 
     /**
-     * Open payment link for item
+     * @inheritDoc
      */
-    public function link(string $item)
+    public function charge(array $data): Session
     {
-        // $item = $this->tiers[$item];
-
-        $session = $this->provider->checkout->sessions->create([
-            'payment_method_types' => ['card'],
-            'line_items' => [
-                [
-                    'price' => $item,
-                    'quantity' => 1,
+        $line_items = $data['items'] ?? array_map(function ($item) use ($data) {
+            return [
+                'price_data' => [
+                    'currency' => $data['currency'],
+                    'product_data' => ['name' => $item['item']],
+                    'unit_amount' => $item['amount'],
                 ],
-            ],
-            'mode' => 'subscription',
-            'success_url' => (request()->getUrl() . $this->config['url.success'] . '?session_id={CHECKOUT_SESSION_ID}' . '&item=' . $item . (auth()->user() ? '&user=' . auth()->id() : '')),
-            'cancel_url' => (request()->getUrl() . $this->config['url.cancel']),
-        ]);
+                'quantity' => $item['quantity'] ?? 1,
+            ];
+        }, $data['metadata']['items'] ?? []);
 
-        // $provider->checkout->sessions->create([
-        //     'success_url' => 'https://example.com/success',
-        //     'cancel_url' => 'https://example.com/cancel',
-        //     'payment_method_types' => ['card'],
-        //     'line_items' => [
-        //         [
-        //             'price' => $tier['price'],
-        //             'quantity' => 1,
-        //         ]
-        //     ],
-        //     'mode' => 'subscription',
-        // ]);
+        if (!isset($data['items'])) {
+            unset($data['metadata']['items']);
+        }
 
-        return $session->url;
+        return new Session(
+            $this->provider->checkout->sessions->create([
+                'payment_method_types' => ['card'],
+                'line_items' => $line_items,
+                'mode' => 'payment',
+                'metadata' => $data['metadata'] ?? [],
+                'customer_email' => $data['customer'] ?? null,
+                'success_url' => $data['success_url'] ?? (request()->getUrl() . $this->config['url.success'] . '?session_id={CHECKOUT_SESSION_ID}'),
+                'cancel_url' => $data['cancel_url'] ?? (request()->getUrl() . $this->config['url.cancel']),
+            ])
+        );
     }
 
     /**
-     * Verify payment
+     * @inheritDoc
      */
-    public function isSuccess()
+    public function subscribe(array $data): Session
+    {
+        return new Session([]);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function subscription(string $id): Subscription
+    {
+        return new Subscription([]);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function subscriptions(): array
+    {
+        return [];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function session(string $id): Session
+    {
+        return new Session([]);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function isSuccessful(): bool
     {
         return ($this->provider->checkout->sessions->retrieve(
             request()->get('session_id')
         ))->payment_status === 'paid';
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function webhook(string $id): Event
+    {
+        return new Event([]);
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function tiers(): array
+    {
+        return $this->tiers;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function periods(): array
+    {
+        return $this->config['periods'];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function tiersByPeriod($period = null): array
+    {
+        return [];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function providerName(): string
+    {
+        return 'Stripe';
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function provider(): StripeClient
+    {
+        return $this->provider;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function errors(): array
+    {
+        return [];
     }
 }
