@@ -41,6 +41,10 @@ class Stripe implements BillingProvider
             'api_key' => $billingSettings['connection']['secrets.apiKey'],
         ];
 
+        if (!$config['api_key']) {
+            return;
+        }
+
         if (isset($billingSettings['connection']['secrets.publishableKey'])) {
             $config['client_id'] = $billingSettings['connection']['secrets.publishableKey'];
         }
@@ -60,7 +64,7 @@ class Stripe implements BillingProvider
             $this->tiers = $provider['tiers'];
         } else {
             $stripeProduct = $this->provider->products->create([
-                'name' => 'Leaf Billing ' . _env('APP_NAME', '') . ' ' . time(),
+                'name' => _env('APP_NAME', '') . ' ' . time(),
             ]);
 
             $this->product = $stripeProduct->id;
@@ -77,7 +81,7 @@ class Stripe implements BillingProvider
     {
         foreach ($tierSettings as $tier) {
             $plan = [
-                'currency' => $this->config['connection']['currency.name'],
+                'currency' => $tier['currency']['name'] ?? $this->config['connection']['currency']['name'] ?? 'usd',
                 'product' => $this->product,
                 'nickname' => $tier['name'],
             ];
@@ -87,6 +91,7 @@ class Stripe implements BillingProvider
                     'unit_amount' => $tier['price'] * 100,
                 ]));
 
+                $tier['currency'] = $stripePlan->currency;
                 $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, $tier))->toArray();
             } else {
                 if ($tier['price.daily'] ?? null) {
@@ -95,7 +100,10 @@ class Stripe implements BillingProvider
                         'recurring' => ['interval' => 'day'],
                     ]));
 
-                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, ['type' => 'daily'])))->toArray();
+                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, [
+                        'billingPeriod' => 'daily',
+                        'currency' => $stripePlan->currency,
+                    ])))->toArray();
                 }
 
                 if ($tier['price.weekly'] ?? null) {
@@ -104,7 +112,10 @@ class Stripe implements BillingProvider
                         'recurring' => ['interval' => 'week'],
                     ]));
 
-                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, ['type' => 'weekly'])))->toArray();
+                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, [
+                        'billingPeriod' => 'weekly',
+                        'currency' => $stripePlan->currency,
+                    ])))->toArray();
                 }
 
                 if ($tier['price.monthly'] ?? null) {
@@ -113,7 +124,10 @@ class Stripe implements BillingProvider
                         'recurring' => ['interval' => 'month'],
                     ]));
 
-                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, ['type' => 'monthly'])))->toArray();
+                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, [
+                        'billingPeriod' => 'monthly',
+                        'currency' => $stripePlan->currency,
+                    ])))->toArray();
                 }
 
                 if ($tier['price.yearly'] ?? null) {
@@ -122,9 +136,71 @@ class Stripe implements BillingProvider
                         'recurring' => ['interval' => 'year'],
                     ]));
 
-                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, ['type' => 'yearly'])))->toArray();
+                    $this->tiers[$stripePlan->id] = (new Tier($stripePlan->id, array_merge($tier, [
+                        'billingPeriod' => 'yearly',
+                        'currency' => $stripePlan->currency,
+                    ])))->toArray();
                 }
             }
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function customer(): ?\Stripe\Customer
+    {
+        try {
+            return $this->provider->customers->retrieve(auth()->user()->billing_id);
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function updateCustomer(string $customerId): void
+    {
+        if (auth()->user()->billing_id === $customerId) {
+            return;
+        }
+
+        db()
+            ->update(\Leaf\Auth\Config::get('db.table'))
+            ->params(['billing_id' => $customerId])
+            ->where(\Leaf\Auth\Config::get('id.key'), auth()->user()->id)
+            ->execute();
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createCustomer(?array $data = null): bool
+    {
+        if ($customer = $this->customer()) {
+            return true;
+        }
+
+        if (!$data) {
+            $data = auth()->user();
+        }
+
+        try {
+            $customer = $this->provider->customers->create([
+                'name' => $data['name'] ?? null,
+                'email' => $data['email'] ?? null,
+                'phone' => $data['phone'] ?? null,
+                'metadata' => [
+                    'user_id' => auth()->user()->id,
+                ],
+            ]);
+
+            $this->updateCustomer($customer->id);
+
+            return true;
+        } catch (\Throwable $th) {
+            return false;
         }
     }
 
@@ -136,7 +212,7 @@ class Stripe implements BillingProvider
         $line_items = $data['items'] ?? array_map(function ($item) use ($data) {
             return [
                 'price_data' => [
-                    'currency' => $data['currency'],
+                    'currency' => $item['currency'] ?? $data['currency'],
                     'product_data' => ['name' => $item['item']],
                     'unit_amount' => $item['amount'],
                 ],
@@ -149,15 +225,17 @@ class Stripe implements BillingProvider
         }
 
         return new Session(
-            $this->provider->checkout->sessions->create([
-                'payment_method_types' => ['card'],
-                'line_items' => $line_items,
-                'mode' => \Stripe\Checkout\Session::MODE_PAYMENT,
-                'metadata' => $data['metadata'] ?? [],
-                'customer_email' => $data['customer'] ?? null,
-                'success_url' => $data['urls']['success'] ?? (request()->getUrl() . $this->config['urls']['success'] . '?session_id={CHECKOUT_SESSION_ID}'),
-                'cancel_url' => $data['urls']['cancel'] ?? (request()->getUrl() . $this->config['urls']['cancel'] . '?session_id={CHECKOUT_SESSION_ID}'),
-            ])
+            $this->provider->checkout->sessions->create(
+                array_merge([
+                    'payment_method_types' => ['card'],
+                    'line_items' => $line_items,
+                    'mode' => \Stripe\Checkout\Session::MODE_PAYMENT,
+                    'metadata' => $data['metadata'] ?? [],
+                    'customer_email' => $data['customer'] ?? null,
+                    'success_url' => $data['urls']['success'] ?? (request()->getUrl() . $this->config['urls']['success'] . '?session_id={CHECKOUT_SESSION_ID}'),
+                    'cancel_url' => $data['urls']['cancel'] ?? (request()->getUrl() . $this->config['urls']['cancel'] . '?session_id={CHECKOUT_SESSION_ID}'),
+                ], $data['_stripe'] ?? [])
+            )
         );
     }
 
@@ -166,23 +244,82 @@ class Stripe implements BillingProvider
      */
     public function subscribe(array $data): Session
     {
-        return new Session([]);
-    }
+        $trialEnd = null;
+        $user = auth()->user();
 
-    /**
-     * @inheritDoc
-     */
-    public function subscription(string $id): ?Subscription
-    {
-        return new Subscription([]);
-    }
+        $tier = ($data['id'] ?? null) ? $this->tiers[$data['id']] : array_values(array_filter($this->tiers, function ($tier) use ($data) {
+            return $tier['name'] === $data['name'];
+        }))[0];
 
-    /**
-     * @inheritDoc
-     */
-    public function subscriptions(): array
-    {
-        return [];
+        if ($tier['trialDays'] ?? null) {
+            // Checkout Sessions are active for 24 hours after their creation and within that time frame the customer
+            // can complete the payment at any time. Stripe requires the trial end at least 48 hours in the future
+            // so that there is still at least a one day trial if your customer pays at the end of the 24 hours.
+            // We also add 10 seconds of extra time to account for any delay with an API request onto Stripe.
+            $minimumTrialPeriod = tick()
+                ->add(48, 'hours')
+                ->add(10, 'seconds');
+
+            $trialEnd = (tick()->add($tier['trialDays'], 'days')->isBefore($minimumTrialPeriod)
+            ? $minimumTrialPeriod->toTimestamp()
+            : tick()->add($tier['trialDays'] + 1, 'days'))->toTimestamp();
+        }
+
+        $stripeData = [
+            'customer' => $user->email,
+            'items' => [
+                [
+                    'price' => $tier['id'],
+                    'quantity' => 1,
+                ]
+            ],
+            'metadata' => [
+                'tier' => $tier['name'],
+                'tier_id' => $tier['id'],
+                'user' => $user->id,
+            ],
+            'urls' => [
+                'success' => $data['urls']['success'] ?? (request()->getUrl() . $this->config['urls']['success'] . '?session_id={CHECKOUT_SESSION_ID}'),
+                'cancel' => $data['urls']['cancel'] ?? (request()->getUrl() . $this->config['urls']['cancel'] . '?session_id={CHECKOUT_SESSION_ID}'),
+            ],
+            '_stripe' => [
+                'mode' => 'subscription',
+                'subscription_data' => [
+                    'trial_end' => $trialEnd,
+                ],
+            ],
+        ];
+
+        if ($data['metadata'] ?? null) {
+            $stripeData['metadata'] = array_merge($stripeData['metadata'], $data['metadata']);
+        }
+
+        if (!$trialEnd) {
+            unset($stripeData['_stripe']['subscription_data']['trial_end']);
+        }
+
+        $session = $this->charge($stripeData);
+        $subscription = auth()->user()->subscriptions()->first();
+
+        if (!$subscription) {
+            $originalTimeStampsConfig = \Leaf\Auth\Config::get('timestamps');
+
+            \Leaf\Auth\Config::set(['timestamps' => false]);
+
+            $subscription = auth()->user()->subscriptions()->create([
+                'name' => $tier['name'],
+                'plan_id' => $tier['id'],
+                'payment_session_id' => $session->id,
+                'status' => Subscription::STATUS_INCOMPLETE,
+                'start_date' => tick()->format('YYYY-MM-DD HH:mm:ss'),
+                'end_date' => tick()->add(1, rtrim($tier['billingPeriod'], 'ly'))->format('YYYY-MM-DD HH:mm:ss'),
+                'trial_ends_at' => $trialEnd ? tick()->add($tier['trialDays'] + 1, 'days')->format('YYYY-MM-DD HH:mm:ss') : null,
+            ]);
+
+            \Leaf\Auth\Config::set(['timestamps' => $originalTimeStampsConfig]);
+        }
+
+        return $session;
     }
 
     /**
@@ -218,9 +355,23 @@ class Stripe implements BillingProvider
     /**
      * @inheritDoc
      */
-    public function tiers(): array
+    public function tiers(?string $billingPeriod = null): array
     {
-        return $this->tiers;
+        if (!$billingPeriod) {
+            return $this->tiers;
+        }
+
+        return array_filter($this->tiers, function ($tier) use ($billingPeriod) {
+            return $tier['billingPeriod'] === $billingPeriod;
+        });
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function tier(string $id): array
+    {
+        return $this->tiers[$id];
     }
 
     /**
@@ -228,15 +379,13 @@ class Stripe implements BillingProvider
      */
     public function periods(): array
     {
-        return $this->config['periods'];
-    }
+        $populatedTiers = [];
 
-    /**
-     * @inheritDoc
-     */
-    public function tiersByPeriod($period = null): array
-    {
-        return [];
+        foreach ($this->tiers as $tier) {
+            $populatedTiers[] = $tier['billingPeriod'];
+        }
+
+        return array_unique($populatedTiers);
     }
 
     /**
@@ -244,7 +393,7 @@ class Stripe implements BillingProvider
      */
     public function providerName(): string
     {
-        return 'Stripe';
+        return 'stripe';
     }
 
     /**
