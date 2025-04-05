@@ -27,6 +27,11 @@ class Stripe implements BillingProvider
     protected $config = [];
 
     /**
+     * Errors caught during operations
+     */
+    protected array $errors = [];
+
+    /**
      * Stripe client
      * @var StripeClient
      */
@@ -325,6 +330,63 @@ class Stripe implements BillingProvider
     /**
      * @inheritDoc
      */
+    public function changeSubcription(array $data): bool
+    {
+        $user = auth()->user();
+
+        $tier = ($data['id'] ?? null) ? $this->tiers[$data['id']] : array_values(array_filter($this->tiers, function ($tier) use ($data) {
+            return $tier['name'] === $data['name'];
+        }))[0];
+
+        $oldSubscription = $this->provider->subscriptions->retrieve($user->subscription()['subscription_id']);
+        $stripeData = [
+            'items' => [
+                [
+                    'id' => $oldSubscription->items->data[0]->id,
+                    'price' => $tier['id'],
+                ]
+            ],
+            'proration_behavior' => 'create_prorations',
+        ];
+
+        if ($data['metadata'] ?? null) {
+            $stripeData['metadata'] = array_merge($stripeData['metadata'], $data['metadata']);
+        }
+
+        try {
+            $this->provider->subscriptions->update($oldSubscription->id, $stripeData);
+        } catch (\Throwable $th) {
+            $this->errors[] = $th->getMessage();
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function cancelSubscription(string $id): bool
+    {
+        $user = auth()->user();
+
+        if (!$user->subscription()) {
+            return true;
+        }
+
+        try {
+            $this->provider->subscriptions->cancel($id);
+        } catch (\Throwable $th) {
+            $this->errors[] = $th->getMessage();
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @inheritDoc
+     */
     public function session(string $id): ?Session
     {
         try {
@@ -341,7 +403,22 @@ class Stripe implements BillingProvider
      */
     public function webhook(): Event
     {
-        return new Event([]);
+        try {
+            $event = \Stripe\Webhook::constructEvent(
+                @file_get_contents('php://input'),
+                $_SERVER['HTTP_STRIPE_SIGNATURE'] ?? '',
+                $this->config['connection']['secrets.webhook'] ?? null
+            );
+        } catch (\Throwable $th) {
+            response()->exit($th, 400);
+        }
+
+        return new Event([
+            'type' => $event['type'],
+            'data' => $event['data'],
+            'id' => $event['id'],
+            'created' => $event['created'],
+        ]);
     }
 
     /**
@@ -369,9 +446,9 @@ class Stripe implements BillingProvider
     /**
      * @inheritDoc
      */
-    public function tier(string $id): array
+    public function tier(string $id): ?array
     {
-        return $this->tiers[$id];
+        return $this->tiers[$id] ?? null;
     }
 
     /**
@@ -409,6 +486,6 @@ class Stripe implements BillingProvider
      */
     public function errors(): array
     {
-        return [];
+        return $this->errors;
     }
 }
