@@ -67,19 +67,40 @@ class Stripe implements BillingProvider
 
             $this->product = $provider['product'];
             $this->tiers = $provider['tiers'];
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function initialize(): bool
+    {
+        if (storage()->exists(StoragePath('billing/stripe.json'))) {
+            $provider = storage()->read(StoragePath('billing/stripe.json'));
+            $provider = json_decode($provider, true);
+
+            $this->product = $provider['product'];
+            $this->tiers = $provider['tiers'];
         } else {
             $stripeProduct = $this->provider->products->create([
                 'name' => _env('APP_NAME', '') . ' ' . time(),
             ]);
 
             $this->product = $stripeProduct->id;
-            $this->initTiers($billingSettings['tiers']);
-
-            storage()->createFile(StoragePath('billing/stripe.json'), json_encode([
-                'product' => $this->product,
-                'tiers' => $this->tiers,
-            ]), ['recursive' => true]);
         }
+
+        try {
+            $this->initTiers($this->config['tiers']);
+        } catch (\Throwable $th) {
+            return false;
+        }
+
+        storage()->createFile(StoragePath('billing/stripe.json'), json_encode([
+            'product' => $this->product,
+            'tiers' => $this->tiers,
+        ]), ['recursive' => true]);
+
+        return true;
     }
 
     protected function initTiers(array $tierSettings)
