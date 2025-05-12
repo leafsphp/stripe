@@ -95,12 +95,10 @@ class Stripe implements BillingProvider
             return false;
         }
 
-        storage()->createFile(StoragePath('billing/stripe.json'), json_encode([
+        return storage()->createFile(StoragePath('billing/stripe.json'), json_encode([
             'product' => $this->product,
             'tiers' => $this->tiers,
         ]), ['recursive' => true]);
-
-        return true;
     }
 
     protected function initTiers(array $tierSettings)
@@ -174,10 +172,11 @@ class Stripe implements BillingProvider
     /**
      * @inheritDoc
      */
-    public function customer(): ?\Stripe\Customer
+    public function customer(): ?Customer
     {
         try {
-            return $this->provider->customers->retrieve(auth()->user()->billing_id);
+            $customer = $this->provider->customers->retrieve(auth()->user()->billing_id);
+            return $customer ? new Customer($customer) : null;
         } catch (\Exception $e) {
             return null;
         }
