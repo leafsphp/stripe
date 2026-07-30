@@ -324,7 +324,12 @@ class Stripe implements BillingProvider
         }
 
         $session = $this->charge($stripeData);
-        $subscription = auth()->user()->subscriptions()->first();
+
+        // a returning customer whose old subscription is cancelled gets a
+        // fresh row — only reuse a row for an in-flight or live subscription
+        $subscription = auth()->user()->subscriptions()
+            ->where('status', '!=', Subscription::STATUS_CANCELLED)
+            ->first();
 
         if (!$subscription) {
             $originalTimeStampsConfig = \Leaf\Auth\Config::get('timestamps');
@@ -350,7 +355,7 @@ class Stripe implements BillingProvider
     /**
      * @inheritDoc
      */
-    public function changeSubcription(array $data): bool
+    public function changeSubscription(array $data): bool
     {
         $user = auth()->user();
 
@@ -384,9 +389,17 @@ class Stripe implements BillingProvider
     }
 
     /**
+     * @deprecated Use changeSubscription instead
+     */
+    public function changeSubcription(array $data): bool
+    {
+        return $this->changeSubscription($data);
+    }
+
+    /**
      * @inheritDoc
      */
-    public function cancelSubscription(string $id): bool
+    public function cancelSubscription(string $id, bool $atPeriodEnd = true): bool
     {
         $user = auth()->user();
 
@@ -395,13 +408,60 @@ class Stripe implements BillingProvider
         }
 
         try {
-            $this->provider->subscriptions->cancel($id);
+            if ($atPeriodEnd) {
+                $this->provider->subscriptions->update($id, [
+                    'cancel_at_period_end' => true,
+                ]);
+            } else {
+                $this->provider->subscriptions->cancel($id);
+            }
         } catch (\Throwable $th) {
             $this->errors[] = $th->getMessage();
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function resumeSubscription(string $id): bool
+    {
+        try {
+            $this->provider->subscriptions->update($id, [
+                'cancel_at_period_end' => false,
+            ]);
+        } catch (\Throwable $th) {
+            $this->errors[] = $th->getMessage();
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function portal(?string $returnUrl = null): ?string
+    {
+        $customer = $this->customer();
+
+        if (!$customer) {
+            return null;
+        }
+
+        try {
+            $session = $this->provider->billingPortal->sessions->create([
+                'customer' => $customer->id(),
+                'return_url' => $returnUrl ?? (request()->getUrl() . '/dashboard'),
+            ]);
+        } catch (\Throwable $th) {
+            $this->errors[] = $th->getMessage();
+            return null;
+        }
+
+        return $session->url;
     }
 
     /**

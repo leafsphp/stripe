@@ -34,13 +34,14 @@
         "leafs/billing": "dev-main"
     },
     "require-dev": {
-        "leafs/alchemy": "^2.2"
+        "leafs/alchemy": "v5.x-dev"
     },
     "scripts": {
         "alchemy": "./vendor/bin/alchemy setup",
-        "test": "./vendor/bin/alchemy setup --test",
-        "lint": "./vendor/bin/alchemy setup --lint",
-        "actions": "./vendor/bin/alchemy setup --actions"
+        "test": "./vendor/bin/alchemy test",
+        "lint": "./vendor/bin/alchemy lint",
+        "fmt": "./vendor/bin/alchemy fmt",
+        "ci": "./vendor/bin/alchemy ci"
     },
     "config": {
         "allow-plugins": {
