@@ -31,7 +31,7 @@
     "prefer-stable": true,
     "require": {
         "stripe/stripe-php": "^16.4",
-        "leafs/billing": "dev-main"
+        "leafs/billing": "v5.x-dev"
     },
     "require-dev": {
         "leafs/alchemy": "v5.x-dev"
